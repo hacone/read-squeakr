@@ -57,6 +57,10 @@
 using namespace std;
 using namespace kmercounting;
 
+/*for each read in fastq, inner_prod is reported against the QF stored here*/
+QF *ref_qf;
+string refip_file;
+
 typedef struct {
 	QF *local_qf;
 	QF *main_qf;
@@ -239,11 +243,15 @@ static void dump_local_qf_to_main(flush_object *obj)
 /* convert a chunk of the fastq file into kmers */
 void reads_to_kmers(chunk &c, flush_object *obj)
 {
+	ofstream refip_log;
+	refip_log.open(refip_file.c_str());
+
 	auto fs = c.get_reads();
 	auto fe = c.get_reads();
 	auto end = fs + c.get_size();
 	while (fs && fs!=end) {
 		fs = static_cast<char*>(memchr(fs, '\n', end-fs)); // ignore the first line
+		string readname(fs+1, fe-fs); // let's not ignore the first line
 		fs++; // increment the pointer
 
 		fe = static_cast<char*>(memchr(fs, '\n', end-fs)); // read the read
@@ -279,17 +287,14 @@ start_read:
 				item = first_rev;
 
 			// hash the kmer using murmurhash/xxHash before adding to the list
-			item = HashUtil::MurmurHash64A(((void*)&item), sizeof(item),
-																		 obj->local_qf->metadata->seed);
+			item = HashUtil::MurmurHash64A(((void*)&item), sizeof(item), obj->local_qf->metadata->seed);
 			/*
 			 * first try and insert in the main QF.
 			 * If lock can't be accuired in the first attempt then
 			 * insert the item in the local QF.
 			 */
-			if (!qf_insert(obj->main_qf, item%obj->main_qf->metadata->range, 0, 1,
-										 true, false)) {
-				qf_insert(obj->local_qf, item%obj->local_qf->metadata->range, 0, 1,
-									false, false);
+			if (!qf_insert(obj->main_qf, item%obj->main_qf->metadata->range, 0, 1, true, false)) {
+				qf_insert(obj->local_qf, item%obj->local_qf->metadata->range, 0, 1, false, false);
 				obj->count++;
 				// check of the load factor of the local QF is more than 50%
 				if (obj->count > 1ULL<<(QBITS_LOCAL_QF-1)) {
@@ -328,6 +333,11 @@ start_read:
 				 * If lock can't be accuired in the first attempt then
 				 * insert the item in the local QF.
 				 */
+				/* NOTE for ref_qf reporting.
+				 * always insert an item to the local QF, which is flushed to the main QF for every read.
+				 * See the alternative below.
+				 */
+				/*
 				if (!qf_insert(obj->main_qf, item%obj->main_qf->metadata->range, 0, 1, true,
 											 false)) {
 					qf_insert(obj->local_qf, item%obj->local_qf->metadata->range, 0, 1, false,
@@ -339,6 +349,11 @@ start_read:
 						obj->count = 0;
 					}
 				}
+				*/
+
+				// This is an alternative implementation
+				qf_insert(obj->local_qf, item%obj->local_qf->metadata->range, 0, 1, false, false);
+				obj->count++;
 
 				//cout<<bitset<64>(next)<<endl;
 				//assert(next == str_to_int(read.substr(i-K+1,K)));
@@ -346,6 +361,14 @@ start_read:
 				next = (next << 2) & BITMASK(2*obj->ksize);
 				next_rev = next_rev >> 2;
 			}
+
+			// Here, inner product between the local (read) QF and the reference QF is taken and reported.
+			uint64_t inner_prod;
+			inner_prod = qf_inner_product(obj->local_qf, ref_qf);
+			refip_log << readname << "\t" << inner_prod << "\t" << readlen... << "\t" << inner_prod / readlen << endl;
+			
+			dump_local_qf_to_main(obj);
+			obj->count = 0;
 		}
 
 next_read:
@@ -356,6 +379,7 @@ next_read:
 		fs++; // increment the pointer
 	}
 	free(c.get_reads());
+	refip_log.close();
 }
 
 /* read a part of the fastq file, parse it, convert the reads to kmers, and
@@ -438,6 +462,7 @@ int main(int argc, char *argv[])
   int qbits;
   int numthreads;
   std::string prefix = "./";
+  std::string refqf; // TODO: how should I check this is empty ?
   std::vector<std::string> filenames;
   using namespace clipp;
   auto cli = (
@@ -449,6 +474,7 @@ int main(int argc, char *argv[])
               required("-s","--log-slots") & value("log-slots", qbits) % "log of number of slots in the CQF",
               required("-t","--threads") & value("num-threads", numthreads) % "number of threads to use to count",
               option("-o","--output-dir") & value("out-dir", prefix) % "directory where output should be written (default = \"./\")",
+              option("-r","--reference-qf") & value("ref-qf", refqf) % "file storing reference QF against which inner_prod is reported for each read counted", // refs
               values("files", filenames) % "list of files to be counted",
               option("-h", "--help")      % "show help"
               );
@@ -490,7 +516,9 @@ int main(int argc, char *argv[])
 	string log_ext(".log");
 	string cluster_ext(".cluster");
 	string freq_ext(".freq");
+	string refip_ext(".refip");
 	struct timeval start1, start2, end1, end2;
+
 	struct timezone tzp;
 	uint32_t OVERHEAD_SIZE = 65535;
 
@@ -518,10 +546,14 @@ int main(int argc, char *argv[])
 	string log_file =     prefix + filename + log_ext;
 	string cluster_file = prefix + filename + cluster_ext;
 	string freq_file =    prefix + filename + freq_ext;
+	refip_file =          prefix + filename + refip_ext;
 
 	uint32_t seed = 2038074761;
-	//Initialize the main  QF
+	//Initialize the main QF
 	qf_init(&cf, (1ULL<<qbits), num_hash_bits, 0, true, "", seed);
+
+	//Initialize the reference QF; TODO Check if the metadata is consistent, e.g., equal k, seed
+	qf_read(&ref_qf, refqf.c_str());
 
 	boost::thread_group prod_threads;
 
@@ -532,8 +564,7 @@ int main(int argc, char *argv[])
 		obj->local_qf = &local_qfs[i];
 		obj->main_qf = &cf;
 		obj->ksize = ksize;
-		prod_threads.add_thread(new boost::thread(fastq_to_uint64kmers_prod,
-																							obj));
+		prod_threads.add_thread(new boost::thread(fastq_to_uint64kmers_prod, obj));
 	}
 
 	cout << "Reading from the fastq file and inserting in the QF" << endl;
