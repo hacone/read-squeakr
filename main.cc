@@ -49,8 +49,7 @@
 #include "kmer.h"
 #include "reader.h"
 
-#define BITMASK(nbits) ((nbits) == 64 ? 0xffffffffffffffff : (1ULL << (nbits)) \
-												- 1ULL)
+#define BITMASK(nbits) ((nbits) == 64 ? 0xffffffffffffffff : (1ULL << (nbits)) - 1ULL)
 #define QBITS_LOCAL_QF 16
 #define SPARE_EMPTY_LOCAL_QFS 16
 
@@ -58,8 +57,9 @@ using namespace std;
 using namespace kmercounting;
 
 /*for each read in fastq, inner_prod is reported against the QF stored here*/
-QF *ref_qf;
+QF ref_qf;
 string refip_file;
+ofstream refip_log;
 
 typedef struct {
 	QF *local_qf;
@@ -149,7 +149,8 @@ static bool fastq_read_parts(int mode, file_pointer *fp)
 	uint64_t& part_filled = fp->part_filled;
 	reader& file_reader = *(fp->freader.get());
 
-	uint32_t OVERHEAD_SIZE = 65535;
+	// Original overhead size seems too short?
+	uint32_t OVERHEAD_SIZE = 65536*16 - 1;
 	uint64_t part_size = 1ULL << 23;
 	char *part = (char *)malloc((part_size + OVERHEAD_SIZE)*sizeof(char));
 	memcpy(part, part_buffer, part_filled);
@@ -164,8 +165,7 @@ static bool fastq_read_parts(int mode, file_pointer *fp)
 	else if (mode == 1)
 		readed = gzread(file_reader.in_gzip, part+part_filled, (int) part_size);
 	else if (mode == 2)
-		readed = BZ2_bzRead(&file_reader.bzerror, file_reader.in_bzip2,
-												part+part_filled, (int) part_size);
+		readed = BZ2_bzRead(&file_reader.bzerror, file_reader.in_bzip2, part+part_filled, (int) part_size);
 	else 
 		readed = 0;
 
@@ -240,23 +240,24 @@ static void dump_local_qf_to_main(flush_object *obj)
 	}
 }
 
+
 /* convert a chunk of the fastq file into kmers */
 void reads_to_kmers(chunk &c, flush_object *obj)
 {
-	ofstream refip_log;
-	refip_log.open(refip_file.c_str());
 
 	auto fs = c.get_reads();
 	auto fe = c.get_reads();
 	auto end = fs + c.get_size();
 	while (fs && fs!=end) {
+
+		auto _fs = fs;
 		fs = static_cast<char*>(memchr(fs, '\n', end-fs)); // ignore the first line
-		string readname(fs+1, fe-fs); // let's not ignore the first line
+		string readname(_fs+1, fs-_fs-1); // let's not ignore the first line
 		fs++; // increment the pointer
 
 		fe = static_cast<char*>(memchr(fs, '\n', end-fs)); // read the read
 		string read(fs, fe-fs);
-		/*cout << read << endl;*/
+		// cout << read << endl;
 
 start_read:
 		if (read.length() < obj->ksize) // start with the next read if length is smaller than K
@@ -293,6 +294,7 @@ start_read:
 			 * If lock can't be accuired in the first attempt then
 			 * insert the item in the local QF.
 			 */
+			/*
 			if (!qf_insert(obj->main_qf, item%obj->main_qf->metadata->range, 0, 1, true, false)) {
 				qf_insert(obj->local_qf, item%obj->local_qf->metadata->range, 0, 1, false, false);
 				obj->count++;
@@ -302,6 +304,17 @@ start_read:
 					obj->count = 0;
 				}
 			}
+			*/
+			// This is an alternative implementation
+			qf_insert(obj->local_qf, item%obj->local_qf->metadata->range, 0, 1, false, false);
+			obj->count++;
+
+			// Do I need this? I hope no.
+			/*if (obj->count > 1ULL<<(QBITS_LOCAL_QF-1)) {
+				dump_local_qf_to_main(obj);
+				obj->count = 0;
+			}*/
+
 			//cout<< "X " << bitset<64>(first)<<endl;
 
 			uint64_t next = (first << 2) & BITMASK(2*obj->ksize);
@@ -324,8 +337,7 @@ start_read:
 					item = next_rev;
 
 			// hash the kmer using murmurhash/xxHash before adding to the list
-				item = HashUtil::MurmurHash64A(((void*)&item), sizeof(item),
-																			 obj->local_qf->metadata->seed);
+				item = HashUtil::MurmurHash64A(((void*)&item), sizeof(item), obj->local_qf->metadata->seed);
 				//item = XXH63 (((void*)&item), sizeof(item), seed);
 
 				/*
@@ -354,6 +366,11 @@ start_read:
 				// This is an alternative implementation
 				qf_insert(obj->local_qf, item%obj->local_qf->metadata->range, 0, 1, false, false);
 				obj->count++;
+				// Do I need this?
+				/*if (obj->count > 1ULL<<(QBITS_LOCAL_QF-1)) {
+					dump_local_qf_to_main(obj);
+					obj->count = 0;
+				}*/
 
 				//cout<<bitset<64>(next)<<endl;
 				//assert(next == str_to_int(read.substr(i-K+1,K)));
@@ -364,11 +381,14 @@ start_read:
 
 			// Here, inner product between the local (read) QF and the reference QF is taken and reported.
 			uint64_t inner_prod;
-			inner_prod = qf_inner_product(obj->local_qf, ref_qf);
-			refip_log << readname << "\t" << inner_prod << "\t" << readlen... << "\t" << inner_prod / readlen << endl;
+			inner_prod = qf_inner_product(obj->local_qf, &ref_qf);
+			// inner_prod = 100;
+			refip_log << readname << "\t" << inner_prod << "\t" << read.length() << "\t" << 1.0 * inner_prod / read.length() << endl;
 			
-			dump_local_qf_to_main(obj);
-			obj->count = 0;
+			if (obj->count > 0) {
+				dump_local_qf_to_main(obj);
+				obj->count = 0;
+			}
 		}
 
 next_read:
@@ -379,7 +399,6 @@ next_read:
 		fs++; // increment the pointer
 	}
 	free(c.get_reads());
-	refip_log.close();
 }
 
 /* read a part of the fastq file, parse it, convert the reads to kmers, and
@@ -474,7 +493,8 @@ int main(int argc, char *argv[])
               required("-s","--log-slots") & value("log-slots", qbits) % "log of number of slots in the CQF",
               required("-t","--threads") & value("num-threads", numthreads) % "number of threads to use to count",
               option("-o","--output-dir") & value("out-dir", prefix) % "directory where output should be written (default = \"./\")",
-              option("-r","--reference-qf") & value("ref-qf", refqf) % "file storing reference QF against which inner_prod is reported for each read counted", // refs
+	      // TODO: This can be optional ideally
+              required("-r","--reference-qf") & value("ref-qf", refqf) % "file storing reference QF against which inner_prod is reported for each read counted", // refs
               values("files", filenames) % "list of files to be counted",
               option("-h", "--help")      % "show help"
               );
@@ -520,7 +540,7 @@ int main(int argc, char *argv[])
 	struct timeval start1, start2, end1, end2;
 
 	struct timezone tzp;
-	uint32_t OVERHEAD_SIZE = 65535;
+	uint32_t OVERHEAD_SIZE = 65536*16 - 1;
 
   for( auto& fn : filenames ) {
 		auto* fr = new reader;
@@ -569,8 +589,10 @@ int main(int argc, char *argv[])
 
 	cout << "Reading from the fastq file and inserting in the QF" << endl;
 	gettimeofday(&start1, &tzp);
+	refip_log.open(refip_file.c_str());
 	prod_threads.join_all();
 	qf_serialize(&cf, ds_file.c_str());
+	refip_log.close();
 	gettimeofday(&end1, &tzp);
 	print_time_elapsed("", &start1, &end1);
 
