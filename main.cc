@@ -56,7 +56,7 @@
 using namespace std;
 using namespace kmercounting;
 
-/*for each read in fastq, inner_prod is reported against the QF stored here*/
+/* for each read in fastq, inner_prod is reported against the QF stored here */
 QF ref_qf;
 string refip_file;
 ofstream refip_log;
@@ -77,7 +77,7 @@ struct file_pointer {
 	uint64_t part_filled{0};
 };
 
-/*create a multi-prod multi-cons queue for storing the chunk of fastq file.*/
+/* create a multi-prod multi-cons queue for storing the chunk of fastq file. */
 boost::lockfree::queue<file_pointer*, boost::lockfree::fixed_sized<true> > ip_files(64);
 boost::atomic<int> num_files {0};
 
@@ -248,6 +248,10 @@ void reads_to_kmers(chunk &c, flush_object *obj)
 	auto fs = c.get_reads();
 	auto fe = c.get_reads();
 	auto end = fs + c.get_size();
+	
+	// centromeric reads are to be output: TODO; accept param to specify the threshold
+	bool is_centromeric; 
+
 	while (fs && fs!=end) {
 
 		auto _fs = fs;
@@ -382,8 +386,15 @@ start_read:
 			// Here, inner product between the local (read) QF and the reference QF is taken and reported.
 			uint64_t inner_prod;
 			inner_prod = qf_inner_product(obj->local_qf, &ref_qf);
-			// inner_prod = 100;
-			refip_log << readname << "\t" << inner_prod << "\t" << read.length() << "\t" << 1.0 * inner_prod / read.length() << endl;
+
+			// to be supressed when read filtering is intended. TODO: this logic must be coded explicitly.
+			// refip_log << readname << "\t" << inner_prod << "\t" << read.length() << "\t" << 1.0 * inner_prod / read.length() << endl;
+
+			// output the centromeric read into stdout
+			if (inner_prod > 200) {
+				cout << ">" << readname << endl;
+				cout << read << endl;
+			}
 			
 			if (obj->count > 0) {
 				dump_local_qf_to_main(obj);
@@ -587,16 +598,18 @@ int main(int argc, char *argv[])
 		prod_threads.add_thread(new boost::thread(fastq_to_uint64kmers_prod, obj));
 	}
 
-	cout << "Reading from the fastq file and inserting in the QF" << endl;
+	// cout << "Reading from the fastq file and inserting in the QF" << endl;
+	cerr << "Reading from the fastq file and inserting in the QF" << endl;
 	gettimeofday(&start1, &tzp);
 	refip_log.open(refip_file.c_str());
 	prod_threads.join_all();
 	qf_serialize(&cf, ds_file.c_str());
 	refip_log.close();
 	gettimeofday(&end1, &tzp);
-	print_time_elapsed("", &start1, &end1);
+	// print_time_elapsed("", &start1, &end1);
 
-	cout << "Calc freq distribution: " << endl;
+	// cout << "Calc freq distribution: " << endl;
+	cerr << "Calc freq distribution: " << endl;
 	//ofstream freq_file;
 	//freq_file.open(freq_file.c_str());
 	uint64_t max_cnt = 0;
@@ -610,13 +623,16 @@ int main(int argc, char *argv[])
 			max_cnt = count;
 	} while (!qfi_next(&cfi));
 	gettimeofday(&end2, &tzp);
-	print_time_elapsed("", &start2, &end2);
+	// print_time_elapsed("", &start2, &end2);
 
-	cout << "Maximum freq: " << max_cnt << endl;
+	// cout << "Maximum freq: " << max_cnt << endl;
+	cerr << "Maximum freq: " << max_cnt << endl;
 	//freq_file.close();
 
-	cout << "Num distinct elem: " << cf.metadata->ndistinct_elts << endl;
-	cout << "Total num elems: " << cf.metadata->nelts << endl;
+	// cout << "Num distinct elem: " << cf.metadata->ndistinct_elts << endl;
+	// cout << "Total num elems: " << cf.metadata->nelts << endl;
+	cerr << "Num distinct elem: " << cf.metadata->ndistinct_elts << endl;
+	cerr << "Total num elems: " << cf.metadata->nelts << endl;
 
 #ifdef LOG_WAIT_TIME
 	ofstream wait_time_log;
