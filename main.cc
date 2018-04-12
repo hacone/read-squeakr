@@ -391,7 +391,7 @@ start_read:
 			// refip_log << readname << "\t" << inner_prod << "\t" << read.length() << "\t" << 1.0 * inner_prod / read.length() << endl;
 
 			// output the centromeric read into stdout
-			if (inner_prod > 200) {
+			if ((1.0 * inner_prod / read.length()) > 200) {
 				cout << ">" << readname << endl;
 				cout << read << endl;
 			}
