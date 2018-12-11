@@ -1,22 +1,33 @@
-READS_FQ=../pacbio/m160526_170733_42274_c101014002550000001823231410211647_s1_p0.filtered.subreads.fastq
-SQUEAKR_DIR=../squeakr
-READ_SQ_DIR=./
-K=6
-S=20
 
-${SQUEAKR_DIR}/squeakr-count -f -k $K -s $S -t 1 -o ./ ../data/monomers/d0.fq \
-&& mv d0.fq.ser d0.fq.K$K.S$S.ser
+# export READS_FQ=../pacbio/m160526_170733_42274_c101014002550000001823231410211647_s1_p0.filtered.subreads.fastq
 
-echo "got d0.fq.K$K.S$S.ser"
+export READS_FQ=../pacbio/Fastq/m160426_225135_00116_c100976532550000001823226708101600_s1_p0.filtered.subreads.fastq.gz
+export SQUEAKR_DIR=../squeakr
+export READ_SQ_DIR=./
+export K=6
+export S=20
+
+
+make_ref_cqf() {
+
+	${SQUEAKR_DIR}/squeakr-count -f -k $K -s $S -t 1 -o ./ ../data/monomers/d0.fq \
+	&& mv d0.fq.ser d0.fq.K$K.S$S.ser
+	# echo "got d0.fq.K$K.S$S.ser"
+}
 
 MONS_CQF=./d0.fq.K$K.S$S.ser
 
 # if [[ -e CQF_IP.K$K.S$S.dat ]]; then echo "Warning: overwriting CQF_IP.K$K.S$S.dat. Aborting."; fi
 
 # ${READ_SQ_DIR}/squeakr-count -f -k $K -s $S -r ${MONS_CQF} -t 1 -o . ./test.fastq
-wc -l ${READS_FQ}
+# wc -l ${READS_FQ}
 
-${READ_SQ_DIR}/squeakr-count -f -k $K -s $S -r ${MONS_CQF} -t 1 -o . ${READS_FQ}
+## This is the call for read-squeakr
+# -- for plain fq
+# ${READ_SQ_DIR}/squeakr-count -f -k $K -s $S -r ${MONS_CQF} -t 1 -o . ${READS_FQ}
+# -- for fq.gz
+
+${READ_SQ_DIR}/squeakr-count -g -k $K -s $S -r ${MONS_CQF} -t 1 -o . ${READS_FQ}
 
 exit
 

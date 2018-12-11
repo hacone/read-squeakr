@@ -53,6 +53,9 @@
 #define QBITS_LOCAL_QF 16
 #define SPARE_EMPTY_LOCAL_QFS 16
 
+#define THRESHOLD 200
+#define VERBOSE false
+
 using namespace std;
 using namespace kmercounting;
 
@@ -342,42 +345,14 @@ start_read:
 
 			// hash the kmer using murmurhash/xxHash before adding to the list
 				item = HashUtil::MurmurHash64A(((void*)&item), sizeof(item), obj->local_qf->metadata->seed);
-				//item = XXH63 (((void*)&item), sizeof(item), seed);
 
-				/*
-				 * first try and insert in the main QF.
-				 * If lock can't be accuired in the first attempt then
-				 * insert the item in the local QF.
-				 */
 				/* NOTE for ref_qf reporting.
 				 * always insert an item to the local QF, which is flushed to the main QF for every read.
 				 * See the alternative below.
+				 * This is an alternative implementation
 				 */
-				/*
-				if (!qf_insert(obj->main_qf, item%obj->main_qf->metadata->range, 0, 1, true,
-											 false)) {
-					qf_insert(obj->local_qf, item%obj->local_qf->metadata->range, 0, 1, false,
-										false);
-					obj->count++;
-					// check of the load factor of the local QF is more than 50%
-					if (obj->count > 1ULL<<(QBITS_LOCAL_QF-1)) {
-						dump_local_qf_to_main(obj);
-						obj->count = 0;
-					}
-				}
-				*/
-
-				// This is an alternative implementation
 				qf_insert(obj->local_qf, item%obj->local_qf->metadata->range, 0, 1, false, false);
 				obj->count++;
-				// Do I need this?
-				/*if (obj->count > 1ULL<<(QBITS_LOCAL_QF-1)) {
-					dump_local_qf_to_main(obj);
-					obj->count = 0;
-				}*/
-
-				//cout<<bitset<64>(next)<<endl;
-				//assert(next == str_to_int(read.substr(i-K+1,K)));
 
 				next = (next << 2) & BITMASK(2*obj->ksize);
 				next_rev = next_rev >> 2;
@@ -387,14 +362,16 @@ start_read:
 			uint64_t inner_prod;
 			inner_prod = qf_inner_product(obj->local_qf, &ref_qf);
 
-			// to be supressed when read filtering is intended. TODO: this logic must be coded explicitly.
-			// refip_log << readname << "\t" << inner_prod << "\t" << read.length() << "\t" << 1.0 * inner_prod / read.length() << endl;
-
-			// output the centromeric read into stdout
-			if ((1.0 * inner_prod / read.length()) > 200) {
-				cout << ">" << readname << endl;
-				cout << read << endl;
-			}
+      // output the centromeric read into stdout
+      if ((1.0 * inner_prod / read.length()) > THRESHOLD) {
+        cout << ">" << readname << endl;
+        cout << read << endl;
+      }
+      if ( VERBOSE ) {
+			  // to be supressed when fast read filtering is intended.
+			  float norm_ip = 1.0 * inner_prod / read.length();
+			  refip_log << readname << "\t" << inner_prod << "\t" << read.length() << "\t" << norm_ip << endl;
+      }
 			
 			if (obj->count > 0) {
 				dump_local_qf_to_main(obj);
@@ -522,19 +499,6 @@ int main(int argc, char *argv[])
   case file_type::gzip: mode = 1; break;
   case file_type::bzip2: mode = 2; break;
   }
-  /*
-  if (argc == 2) {
-		string arg_help(argv[1]);
-		if (arg_help.compare("-h") != 0 || arg_help.compare("-help") != 0) {
-			cout << "./squeakr-count [OPTIONS]" << endl
-				   << "file format   : 0 - plain fastq, 1 - gzip compressed fastq, 2 - bzip2 compressed fastq" << endl
-					 << "CQF size      : the log of the number of slots in the CQF" << endl
-					 << "num of threads: number of threads to count" << endl
-					 << "file(s)       : \"filename\" or \"dirname/\" for all the files in a directory" << endl;
-			exit(0);
-		}
-	}
-  */
 
   /*
 	int mode = atoi(argv[1]);
@@ -542,6 +506,7 @@ int main(int argc, char *argv[])
 	int qbits = atoi(argv[3]);
 	int numthreads = atoi(argv[4]);
   */
+
 	int num_hash_bits = qbits+8;	// we use 8 bits for remainders in the main QF
 	string ser_ext(".ser");
 	string log_ext(".log");
@@ -598,7 +563,6 @@ int main(int argc, char *argv[])
 		prod_threads.add_thread(new boost::thread(fastq_to_uint64kmers_prod, obj));
 	}
 
-	// cout << "Reading from the fastq file and inserting in the QF" << endl;
 	cerr << "Reading from the fastq file and inserting in the QF" << endl;
 	gettimeofday(&start1, &tzp);
 	refip_log.open(refip_file.c_str());
@@ -606,9 +570,7 @@ int main(int argc, char *argv[])
 	qf_serialize(&cf, ds_file.c_str());
 	refip_log.close();
 	gettimeofday(&end1, &tzp);
-	// print_time_elapsed("", &start1, &end1);
 
-	// cout << "Calc freq distribution: " << endl;
 	cerr << "Calc freq distribution: " << endl;
 	//ofstream freq_file;
 	//freq_file.open(freq_file.c_str());
@@ -618,19 +580,14 @@ int main(int argc, char *argv[])
 	do {
 		uint64_t key = 0, value = 0, count = 0;
 		qfi_get(&cfi, &key, &value, &count);
-		//freq_file << key << " " << count << endl;
 		if (max_cnt < count)
 			max_cnt = count;
 	} while (!qfi_next(&cfi));
 	gettimeofday(&end2, &tzp);
-	// print_time_elapsed("", &start2, &end2);
 
-	// cout << "Maximum freq: " << max_cnt << endl;
 	cerr << "Maximum freq: " << max_cnt << endl;
 	//freq_file.close();
 
-	// cout << "Num distinct elem: " << cf.metadata->ndistinct_elts << endl;
-	// cout << "Total num elems: " << cf.metadata->nelts << endl;
 	cerr << "Num distinct elem: " << cf.metadata->ndistinct_elts << endl;
 	cerr << "Total num elems: " << cf.metadata->nelts << endl;
 
