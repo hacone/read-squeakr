@@ -53,6 +53,9 @@
 #define QBITS_LOCAL_QF 16
 #define SPARE_EMPTY_LOCAL_QFS 16
 
+int threshold = 200;
+int verbose = 0; // false
+
 #define THRESHOLD 200
 #define VERBOSE false
 
@@ -252,9 +255,6 @@ void reads_to_kmers(chunk &c, flush_object *obj)
 	auto fe = c.get_reads();
 	auto end = fs + c.get_size();
 	
-	// centromeric reads are to be output: TODO; accept param to specify the threshold
-	bool is_centromeric; 
-
 	while (fs && fs!=end) {
 
 		auto _fs = fs;
@@ -286,9 +286,6 @@ start_read:
 			first = first >> 2;
 			first_rev = kmer::reverse_complement(first, obj->ksize);
 
-			//cout << "kmer: "; cout << int_to_str(first);
-			//cout << " reverse-comp: "; cout << int_to_str(first_rev) << endl;
-
 			if (kmer::compare_kmers(first, first_rev))
 				item = first;
 			else
@@ -296,39 +293,15 @@ start_read:
 
 			// hash the kmer using murmurhash/xxHash before adding to the list
 			item = HashUtil::MurmurHash64A(((void*)&item), sizeof(item), obj->local_qf->metadata->seed);
-			/*
-			 * first try and insert in the main QF.
-			 * If lock can't be accuired in the first attempt then
-			 * insert the item in the local QF.
-			 */
-			/*
-			if (!qf_insert(obj->main_qf, item%obj->main_qf->metadata->range, 0, 1, true, false)) {
-				qf_insert(obj->local_qf, item%obj->local_qf->metadata->range, 0, 1, false, false);
-				obj->count++;
-				// check of the load factor of the local QF is more than 50%
-				if (obj->count > 1ULL<<(QBITS_LOCAL_QF-1)) {
-					dump_local_qf_to_main(obj);
-					obj->count = 0;
-				}
-			}
-			*/
+
 			// This is an alternative implementation
 			qf_insert(obj->local_qf, item%obj->local_qf->metadata->range, 0, 1, false, false);
 			obj->count++;
-
-			// Do I need this? I hope no.
-			/*if (obj->count > 1ULL<<(QBITS_LOCAL_QF-1)) {
-				dump_local_qf_to_main(obj);
-				obj->count = 0;
-			}*/
-
-			//cout<< "X " << bitset<64>(first)<<endl;
 
 			uint64_t next = (first << 2) & BITMASK(2*obj->ksize);
 			uint64_t next_rev = first_rev >> 2;
 
 			for(uint32_t i=obj->ksize; i<read.length(); i++) { //next kmers
-				//cout << "K: " << read.substr(i-K+1,K) << endl;
 				uint8_t curr = kmer::map_base(read[i]);
 				if (curr > DNA_MAP::G) { // 'N' is encountered
 					read = read.substr(i+1, read.length());
@@ -363,11 +336,12 @@ start_read:
 			inner_prod = qf_inner_product(obj->local_qf, &ref_qf);
 
       // output the centromeric read into stdout
-      if ((1.0 * inner_prod / read.length()) > THRESHOLD) {
+      if ((1.0 * inner_prod / read.length()) > threshold) {
         cout << ">" << readname << endl;
         cout << read << endl;
       }
-      if ( VERBOSE ) {
+
+      if ( verbose ) {
 			  // to be supressed when fast read filtering is intended.
 			  float norm_ip = 1.0 * inner_prod / read.length();
 			  refip_log << readname << "\t" << inner_prod << "\t" << read.length() << "\t" << norm_ip << endl;
@@ -483,6 +457,8 @@ int main(int argc, char *argv[])
               option("-o","--output-dir") & value("out-dir", prefix) % "directory where output should be written (default = \"./\")",
 	      // TODO: This can be optional ideally
               required("-r","--reference-qf") & value("ref-qf", refqf) % "file storing reference QF against which inner_prod is reported for each read counted", // refs
+              option("-v","--verbose") & value("verbose", verbose) % "whether to be verbose",
+              option("-u","--threshold") & value("threshold", threshold) % "threshold normalized inner product for reads to be reported as centromeric (default = 200; for 6-mer)",
               values("files", filenames) % "list of files to be counted",
               option("-h", "--help")      % "show help"
               );
@@ -538,6 +514,7 @@ int main(int argc, char *argv[])
   if (prefix.back() != '/') {
     prefix += '/';
   }
+
 	string ds_file =      prefix + filename + ser_ext;
 	string log_file =     prefix + filename + log_ext;
 	string cluster_file = prefix + filename + cluster_ext;
@@ -563,17 +540,15 @@ int main(int argc, char *argv[])
 		prod_threads.add_thread(new boost::thread(fastq_to_uint64kmers_prod, obj));
 	}
 
-	cerr << "Reading from the fastq file and inserting in the QF" << endl;
 	gettimeofday(&start1, &tzp);
 	refip_log.open(refip_file.c_str());
+
+  // NOTE: This is the meat.
 	prod_threads.join_all();
-	qf_serialize(&cf, ds_file.c_str());
+
 	refip_log.close();
 	gettimeofday(&end1, &tzp);
 
-	cerr << "Calc freq distribution: " << endl;
-	//ofstream freq_file;
-	//freq_file.open(freq_file.c_str());
 	uint64_t max_cnt = 0;
 	qf_iterator(&cf, &cfi, 0);
 	gettimeofday(&start2, &tzp);
@@ -584,12 +559,6 @@ int main(int argc, char *argv[])
 			max_cnt = count;
 	} while (!qfi_next(&cfi));
 	gettimeofday(&end2, &tzp);
-
-	cerr << "Maximum freq: " << max_cnt << endl;
-	//freq_file.close();
-
-	cerr << "Num distinct elem: " << cf.metadata->ndistinct_elts << endl;
-	cerr << "Total num elems: " << cf.metadata->nelts << endl;
 
 #ifdef LOG_WAIT_TIME
 	ofstream wait_time_log;

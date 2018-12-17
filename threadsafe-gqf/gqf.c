@@ -1723,7 +1723,8 @@ void qf_read(QF *qf, const char *path)
 	int ret;
 
 	qf->mem = (qfmem *)calloc(sizeof(qfmem), 1);
-	qf->mem->fd = open(path, O_RDWR, S_IRWXU);
+	// qf->mem->fd = open(path, O_RDWR, S_IRWXU);
+	qf->mem->fd = open(path, O_RDONLY);
 	if (qf->mem->fd < 0) {
 		perror("Couldn't open file:\n");
 		exit(EXIT_FAILURE);
@@ -1740,8 +1741,8 @@ void qf_read(QF *qf, const char *path)
 		exit(EXIT_FAILURE);
 	}
 
-	qf->metadata = (qfmetadata *)mmap(NULL, sb.st_size, PROT_READ | PROT_WRITE, MAP_SHARED,
-																qf->mem->fd, 0);
+	// qf->metadata = (qfmetadata *)mmap(NULL, sb.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, qf->mem->fd, 0);
+	qf->metadata = (qfmetadata *)mmap(NULL, sb.st_size, PROT_READ, MAP_SHARED, qf->mem->fd, 0);
 
 	qf->blocks = (qfblock *)(qf->metadata + 1);
 }
@@ -1894,8 +1895,8 @@ int qfi_get(QFi *qfi, uint64_t *key, uint64_t *value, uint64_t *count)
 	*value = 0;   // for now we are not using value
 	*count = current_count; 
 	
-	qfi->qf->metadata->ndistinct_elts++;
-	qfi->qf->metadata->nelts += current_count;
+	// qfi->qf->metadata->ndistinct_elts++;
+	// qfi->qf->metadata->nelts += current_count;
 
 	/*qfi->current = end_index;*/ 		//get should not change the current index
 																		//of the iterator
