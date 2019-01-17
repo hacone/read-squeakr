@@ -263,7 +263,14 @@ void reads_to_kmers(chunk &c, flush_object *obj)
 		fs++; // increment the pointer
 
 		fe = static_cast<char*>(memchr(fs, '\n', end-fs)); // read the read
-		string read(fs, fe-fs);
+
+    // NOTE: accept upto 250 kbp
+    uint64_t qs = fe - fs;
+    if ( sizeof(char) * 250000 < (fe-fs) ) {
+            qs = sizeof(char) * 250000;
+    }
+    string read(fs, qs);
+		string wholeread(fs, fe-fs);
 		// cout << read << endl;
 
 start_read:
@@ -338,7 +345,7 @@ start_read:
       // output the centromeric read into stdout
       if ((1.0 * inner_prod / read.length()) > threshold) {
         cout << ">" << readname << endl;
-        cout << read << endl;
+        cout << wholeread << endl;
       }
 
       if ( verbose ) {
