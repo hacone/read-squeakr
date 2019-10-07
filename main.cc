@@ -56,9 +56,6 @@
 int threshold = 200;
 int verbose = 0; // false
 
-#define THRESHOLD 200
-#define VERBOSE false
-
 using namespace std;
 using namespace kmercounting;
 
@@ -264,7 +261,7 @@ void reads_to_kmers(chunk &c, flush_object *obj)
 
 		fe = static_cast<char*>(memchr(fs, '\n', end-fs)); // read the read
 
-    // NOTE: accept upto 250 kbp
+    // NOTE: accept upto 250 kbp and the rest will be ignored
     uint64_t qs = fe - fs;
     if ( sizeof(char) * 250000 < (fe-fs) ) {
             qs = sizeof(char) * 250000;
@@ -343,13 +340,12 @@ start_read:
 			inner_prod = qf_inner_product(obj->local_qf, &ref_qf);
 
       // output the centromeric read into stdout
-      if ((1.0 * inner_prod / read.length()) > threshold) {
+      if ((100.0 * inner_prod / read.length()) > threshold) {
         cout << ">" << readname << endl;
         cout << wholeread << endl;
       }
 
       if ( verbose ) {
-			  // to be supressed when fast read filtering is intended.
 			  float norm_ip = 1.0 * inner_prod / read.length();
 			  refip_log << readname << "\t" << inner_prod << "\t" << read.length() << "\t" << norm_ip << endl;
       }
@@ -465,7 +461,7 @@ int main(int argc, char *argv[])
 	      // TODO: This can be optional ideally
               required("-r","--reference-qf") & value("ref-qf", refqf) % "file storing reference QF against which inner_prod is reported for each read counted", // refs
               option("-v","--verbose") & value("verbose", verbose) % "whether to be verbose",
-              option("-u","--threshold") & value("threshold", threshold) % "threshold normalized inner product for reads to be reported as centromeric (default = 200; for 6-mer)",
+              option("-u","--threshold") & value("threshold", threshold) % "threshold normalized inner product for reads to be reported as centromeric (default = 20000 (for 6-mer / 1197))",
               values("files", filenames) % "list of files to be counted",
               option("-h", "--help")      % "show help"
               );
@@ -526,7 +522,7 @@ int main(int argc, char *argv[])
 	string log_file =     prefix + filename + log_ext;
 	string cluster_file = prefix + filename + cluster_ext;
 	string freq_file =    prefix + filename + freq_ext;
-	refip_file =          prefix + filename + refip_ext;
+	string refip_file =   prefix + filename + refip_ext;
 
 	uint32_t seed = 2038074761;
 	//Initialize the main QF
@@ -548,12 +544,16 @@ int main(int argc, char *argv[])
 	}
 
 	gettimeofday(&start1, &tzp);
-	refip_log.open(refip_file.c_str());
 
   // NOTE: This is the meat.
-	prod_threads.join_all();
+  if (verbose) {
+          refip_log.open(refip_file.c_str());
+          prod_threads.join_all();
+          refip_log.close();
+  } else {
+          prod_threads.join_all();
+  }
 
-	refip_log.close();
 	gettimeofday(&end1, &tzp);
 
 	uint64_t max_cnt = 0;
